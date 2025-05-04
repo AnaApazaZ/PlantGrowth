@@ -4,9 +4,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
+from scipy.interpolate import lagrange, interp1d
 from scipy.stats import linregress
 import os
-from interpolation import lagrange_interpolation, newton_interpolation, cubic_spline, linear_regression
+from datasets import load_dataB
 
 class PlantGrowthInterpolator:
     def __init__(self, root):
@@ -19,12 +20,10 @@ class PlantGrowthInterpolator:
         self.default_data = {
             "Basil": np.array([[0,1,4,5,6,7,8,9,11,12],
                                [7.22,7.5,8,12,15,18,24,37,42,54]]), #https://data.mendeley.com/datasets/vx4jy7wyvd/1/files/05bbf7c4-7bb6-445e-977e-fea44c9ab7b7
-            "Tomate": np.array([[0, 1, 2, 3, 4, 5], 
-                              [0, 1, 3, 6, 10, 15]]),
-            "Rosa": np.array([[0, 2, 4, 6, 8, 10], 
-                             [0, 3, 7, 10, 12, 13]]),
-            "Girasol": np.array([[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50],
-                                [0, 5, 15, 30, 60, 100, 140, 170, 190, 200, 210]])  # Nueva planta añadida
+            "Espinaca": np.array([[0,3,6,9,12,15,18,21], 
+                              [1.50,3.20,4.65,6.10,8.00,9.30,11.40,13.50]]),#Rubatzky, V. E., & Yamaguchi, M. (1997). World Vegetables: Principles, Production, and Nutritive Values. Springer.
+            "Semilla de maiz": np.array([[0, 3, 6, 9, 12, 15, 18, 21, 24], 
+                                         [0, 1, 1, 1.4, 2.75, 5.5, 7.2, 9.5, 10]])#https://es.slideshare.net/slideshow/informe-experimento-plantas-1/10832712?utm_source=chatgpt.com
         }
         
         self.current_data = None
@@ -79,26 +78,17 @@ class PlantGrowthInterpolator:
         plant_frame = ttk.LabelFrame(main_frame, text="Seleccionar Planta", padding=10)
         plant_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5)
         
-        # Organizar los RadioButtons en 2 filas para mejor visualización
-        plants = list(self.default_data.keys())
-        half = len(plants) // 2 + len(plants) % 2
-        
-        for i, plant in enumerate(plants[:half]):
+        for i, plant in enumerate(self.default_data.keys()):
             rb = ttk.Radiobutton(plant_frame, text=plant, variable=self.selected_plant, 
                                 value=plant, command=lambda: self.load_plant_data(self.selected_plant.get()))
             rb.grid(row=0, column=i, padx=5, pady=5)
-        
-        for i, plant in enumerate(plants[half:], start=half):
-            rb = ttk.Radiobutton(plant_frame, text=plant, variable=self.selected_plant, 
-                                value=plant, command=lambda: self.load_plant_data(self.selected_plant.get()))
-            rb.grid(row=1, column=i-half, padx=5, pady=5)
         
         self.selected_plant.set("Basil")
         
         # Opción para datos personalizados
         custom_btn = ttk.Button(plant_frame, text="Ingresar Datos Personalizados", 
                               command=self.load_custom_data)
-        custom_btn.grid(row=2, column=0, columnspan=len(plants), pady=5)
+        custom_btn.grid(row=1, column=0, columnspan=3, pady=5)
         
         # Método de interpolación
         method_frame = ttk.LabelFrame(main_frame, text="Método de Estimación", padding=10)
@@ -193,6 +183,27 @@ class PlantGrowthInterpolator:
         
         return data
     
+    def newton_interpolation(self, x_data, y_data, x):
+        """Newton's divided differences interpolation"""
+        n = len(x_data)
+        coef = np.zeros([n, n])
+        coef[:,0] = y_data
+        
+        # Calculate divided differences
+        for j in range(1, n):
+            for i in range(n - j):
+                coef[i][j] = (coef[i+1][j-1] - coef[i][j-1]) / (x_data[i+j] - x_data[i])
+        
+        # Evaluate the polynomial
+        result = coef[0,0]
+        for j in range(1, n):
+            term = coef[0,j]
+            for k in range(j):
+                term *= (x - x_data[k])
+            result += term
+        
+        return result
+    
     def load_plant_data(self, plant_name):
         """Load predefined plant data"""
         self.current_data = self.default_data[plant_name]
@@ -258,14 +269,16 @@ class PlantGrowthInterpolator:
             height = 0
             
             if method == "Lagrange":
-                height = lagrange_interpolation(time_data, growth_data, t)
+                poly = lagrange(time_data, growth_data)
+                height = poly(t)
             elif method == "Newton":
-                height = newton_interpolation(time_data, growth_data, t)
+                height = self.newton_interpolation(time_data, growth_data, t)
             elif method == "Splines":
-                height = cubic_spline(time_data, growth_data, t)
+                spline = interp1d(time_data, growth_data, kind='cubic', fill_value='extrapolate')
+                height = spline(t)
             elif method == "Regresión Lineal":
-                (slope, intercept), predict = linear_regression(time_data, growth_data)
-                height = predict(t)
+                slope, intercept, _, _, _ = linregress(time_data, growth_data)
+                height = slope * t + intercept
             elif method == "Regresión Exponencial":
                 log_y = np.log(growth_data)
                 slope, intercept, _, _, _ = linregress(time_data, log_y)
@@ -296,20 +309,16 @@ class PlantGrowthInterpolator:
                 fine_time = np.linspace(min(time_data), max(time_data), 200)
                 
                 method = self.selected_method.get()
-                if method == "Lagrange":
-                    y_values = [lagrange_interpolation(time_data, growth_data, x) for x in fine_time]
-                    self.ax.plot(fine_time, y_values, '--', color='#7cb342', 
-                                label='Interpolación de Lagrange', linewidth=2)
-                elif method == "Newton":
-                    y_values = [newton_interpolation(time_data, growth_data, x) for x in fine_time]
-                    self.ax.plot(fine_time, y_values, '--', color='#7cb342', 
-                                label='Interpolación de Newton', linewidth=2)
+                if method in ["Lagrange", "Newton"]:
+                    poly = lagrange(time_data, growth_data)
+                    self.ax.plot(fine_time, poly(fine_time), '--', color='#7cb342', 
+                                label='Interpolación polinómica', linewidth=2)
                 elif method == "Splines":
-                    y_values = cubic_spline(time_data, growth_data, fine_time)
-                    self.ax.plot(fine_time, y_values, '--', color='#7cb342', 
+                    spline = interp1d(time_data, growth_data, kind='cubic')
+                    self.ax.plot(fine_time, spline(fine_time), '--', color='#7cb342', 
                                 label='Interpolación por splines cúbicos', linewidth=2)
                 elif method == "Regresión Lineal":
-                    (slope, intercept), _ = linear_regression(time_data, growth_data)
+                    slope, intercept, _, _, _ = linregress(time_data, growth_data)
                     self.ax.plot(fine_time, slope*fine_time + intercept, '--', color='#7cb342', 
                                 label='Regresión lineal', linewidth=2)
                 elif method == "Regresión Exponencial":
